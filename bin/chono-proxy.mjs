@@ -2,8 +2,8 @@
 /**
  * Chono proxy — sits between Claudex and DeepSeek API.
  * Handles:
- *   1. reasoning_content: accumulates across SSE stream chunks, stores complete
- *      pair at end, injects back into conversation history on next request
+ *   1. reasoning_content: stores per assistant turn in order, injects back
+ *      positionally on next request (works even for empty-content tool-call msgs)
  *   2. Model name mapping: Claude aliases → DeepSeek model IDs
  */
 
@@ -25,32 +25,23 @@ const MODEL_MAP = {
   'haiku':                     'deepseek-v4-flash',
 }
 
-// full assistant content → full reasoning_content
-const reasoningStore = new Map()
+// Ordered list of reasoning_content, one entry per assistant turn in session order.
+// Injected positionally: the nth assistant message in history gets reasoningList[n].
+const reasoningList = []
 
 function resolveModel(model) {
   return MODEL_MAP[model] ?? model
 }
 
-function extractText(content) {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .filter(b => b.type === 'text')
-      .map(b => b.text ?? '')
-      .join('')
-  }
-  return ''
-}
-
 function injectReasoning(messages) {
+  let aIdx = 0
   return messages.map(msg => {
-    if (msg.role !== 'assistant' || !msg.content) return msg
-    const key = extractText(msg.content)
-    const rc = reasoningStore.get(key)
-    process.stderr.write(`[proxy] assistant msg key="${key.slice(0,60)}..." store_size=${reasoningStore.size} hit=${!!rc}\n`)
-    if (!rc) return msg
-    return { ...msg, reasoning_content: rc }
+    if (msg.role !== 'assistant') return msg
+    const entry = reasoningList[aIdx]
+    process.stderr.write(`[proxy] inject aIdx=${aIdx} has_entry=${!!entry}\n`)
+    aIdx++
+    if (!entry) return msg
+    return { ...msg, reasoning_content: entry }
   })
 }
 
@@ -91,7 +82,7 @@ const server = http.createServer((req, res) => {
   req.on('data', chunk => rawReq += chunk)
   req.on('end', () => {
     let body
-    try { body = JSON.parse(rawReq) } catch (e) {
+    try { body = JSON.parse(rawReq) } catch {
       res.writeHead(400)
       res.end(JSON.stringify({ error: { message: 'Bad JSON', type: 'proxy_error' } }))
       return
@@ -102,13 +93,11 @@ const server = http.createServer((req, res) => {
     const upstream = makeRequest(data, { streaming })
 
     upstream.on('response', upRes => {
-      // Forward headers
       res.writeHead(upRes.statusCode, {
         'Content-Type': upRes.headers['content-type'] ?? 'application/json',
       })
 
       if (!streaming) {
-        // Non-streaming: buffer, store reasoning, forward
         let raw = ''
         upRes.on('data', chunk => raw += chunk)
         upRes.on('end', () => {
@@ -116,8 +105,9 @@ const server = http.createServer((req, res) => {
             try {
               const parsed = JSON.parse(raw)
               const msg = parsed.choices?.[0]?.message
-              if (msg?.role === 'assistant' && msg.reasoning_content && msg.content) {
-                reasoningStore.set(msg.content, msg.reasoning_content)
+              if (msg?.reasoning_content) {
+                reasoningList.push(msg.reasoning_content)
+                process.stderr.write(`[proxy] stored reasoning[${reasoningList.length - 1}] (non-stream) len=${msg.reasoning_content.length}\n`)
               }
             } catch {}
           }
@@ -126,38 +116,26 @@ const server = http.createServer((req, res) => {
         return
       }
 
-      // Streaming: pass through chunks in real time, accumulate for storage
-      let accContent = ''
+      // Streaming: pass through in real time, accumulate for storage
       let accReasoning = ''
 
       upRes.on('data', chunk => {
-        const text = chunk.toString()
-        res.write(chunk) // pass through immediately
-
-        // Parse SSE lines to accumulate content + reasoning
-        for (const line of text.split('\n')) {
+        res.write(chunk)
+        for (const line of chunk.toString().split('\n')) {
           if (!line.startsWith('data:')) continue
           const json = line.slice(5).trim()
-          if (json === '[DONE]') {
-            // Stream ended — store the complete pair
-            if (accContent && accReasoning) {
-              reasoningStore.set(accContent, accReasoning)
-            }
-            continue
-          }
+          if (json === '[DONE]') continue
           try {
-            const evt = JSON.parse(json)
-            const delta = evt.choices?.[0]?.delta
-            if (delta?.content)           accContent   += delta.content
+            const delta = JSON.parse(json).choices?.[0]?.delta
             if (delta?.reasoning_content) accReasoning += delta.reasoning_content
           } catch {}
         }
       })
 
       upRes.on('end', () => {
-        // Final store in case [DONE] wasn't in last chunk
-        if (accContent && accReasoning) {
-          reasoningStore.set(accContent, accReasoning)
+        if (accReasoning) {
+          reasoningList.push(accReasoning)
+          process.stderr.write(`[proxy] stored reasoning[${reasoningList.length - 1}] len=${accReasoning.length}\n`)
         }
         res.end()
       })
