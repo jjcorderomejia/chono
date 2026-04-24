@@ -1,12 +1,10 @@
 {
-  "name": "@letchu_pkt/claudex",
-  "version": "1.1.0",
-  "publisher": "letchu_pkt",
-  "description": "Claude Code opened to any LLM — OpenAI, Gemini, DeepSeek, Ollama, and 200+ models",
+  "name": "chono",
+  "version": "1.0.0",
+  "description": "Chono — multi-model agentic CLI",
   "type": "module",
   "bin": {
-    "claudex": "./bin/claudex",
-    "claudex-telegram": "./bin/claudex-telegram"
+    "chono": "./bin/chono"
   },
   "files": [
     "bin/",
@@ -131,23 +129,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/l3tchupkt/claudex"
+    "url": "https://github.com/jjcorderomejia/chono"
   },
-  "author": "Lakshmikanthan K (letchupkt)",
+  "author": "jjcorderomejia",
   "keywords": [
-    "claude-code",
-    "claudex",
-    "openai",
+    "chono",
+    "deepseek",
     "llm",
     "cli",
-    "agent",
-    "deepseek",
-    "ollama",
-    "gemini"
+    "agent"
   ],
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org"
-  }
+  "license": "MIT"
 }

@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+
+/**
+ * Chono — multi-model agentic CLI
+ *
+ * Usage:
+ *   chono                          # start in current directory
+ *   chono --think /path/to/project # start DeepSeek reasoner in given directory
+ */
+
+import { existsSync } from 'fs'
+import { join, dirname, resolve } from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
+
+// Parse --think <path> before anything else so process.chdir() fires
+// before the bootstrap state reads process.cwd()
+const thinkIdx = process.argv.indexOf('--think')
+if (thinkIdx !== -1 && process.argv[thinkIdx + 1]) {
+  const thinkPath = resolve(process.argv[thinkIdx + 1])
+  if (!existsSync(thinkPath)) {
+    console.error(`chono: path not found: ${thinkPath}`)
+    process.exit(1)
+  }
+  process.chdir(thinkPath)
+  // Remove --think <path> from argv so the rest of the CLI doesn't see them
+  process.argv.splice(thinkIdx, 2)
+  // Wire DeepSeek reasoner
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
+  process.env.OPENAI_API_KEY = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? ''
+  process.env.OPENAI_MODEL = 'deepseek-reasoner'
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const distPath = join(__dirname, '..', 'dist', 'cli.mjs')
+
+if (existsSync(distPath)) {
+  await import(pathToFileURL(distPath).href)
+} else {
+  console.error(`
+  chono: dist/cli.mjs not found.
+
+  Build first:
+    bun run build
+
+  Or run directly with Bun:
+    bun run dev
+`)
+  process.exit(1)
+}
