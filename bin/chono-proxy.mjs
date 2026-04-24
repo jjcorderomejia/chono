@@ -2,8 +2,8 @@
 /**
  * Chono proxy — sits between Claudex and DeepSeek API.
  * Handles:
- *   1. reasoning_content: stores it from responses, injects it back into
- *      conversation history on subsequent requests (DeepSeek V4 Pro requirement)
+ *   1. reasoning_content: accumulates across SSE stream chunks, stores complete
+ *      pair at end, injects back into conversation history on next request
  *   2. Model name mapping: Claude aliases → DeepSeek model IDs
  */
 
@@ -15,18 +15,17 @@ const DEEPSEEK_KEY  = process.env.DEEPSEEK_API_KEY ?? ''
 const PORT          = parseInt(process.env.CHONO_PROXY_PORT ?? '4799')
 
 const MODEL_MAP = {
-  // Claude aliases → DeepSeek
-  'claude-opus-4-7':              'deepseek-v4-pro',
-  'claude-opus-4-6':              'deepseek-v4-pro',
-  'claude-sonnet-4-6':            'deepseek-v4-flash',
-  'claude-sonnet-4-5':            'deepseek-v4-flash',
-  'claude-haiku-4-5-20251001':    'deepseek-v4-flash',
-  'opus':                         'deepseek-v4-pro',
-  'sonnet':                       'deepseek-v4-flash',
-  'haiku':                        'deepseek-v4-flash',
+  'claude-opus-4-7':           'deepseek-v4-pro',
+  'claude-opus-4-6':           'deepseek-v4-pro',
+  'claude-sonnet-4-6':         'deepseek-v4-flash',
+  'claude-sonnet-4-5':         'deepseek-v4-flash',
+  'claude-haiku-4-5-20251001': 'deepseek-v4-flash',
+  'opus':                      'deepseek-v4-pro',
+  'sonnet':                    'deepseek-v4-flash',
+  'haiku':                     'deepseek-v4-flash',
 }
 
-// content → reasoning_content (keyed by assistant message content string)
+// full assistant content → full reasoning_content
 const reasoningStore = new Map()
 
 function resolveModel(model) {
@@ -35,84 +34,129 @@ function resolveModel(model) {
 
 function injectReasoning(messages) {
   return messages.map(msg => {
-    if (msg.role !== 'assistant') return msg
+    if (msg.role !== 'assistant' || !msg.content) return msg
     const rc = reasoningStore.get(msg.content)
     if (!rc) return msg
     return { ...msg, reasoning_content: rc }
   })
 }
 
-function storeReasoning(choices) {
-  for (const choice of choices ?? []) {
-    const msg = choice.message ?? choice.delta
-    if (msg?.role === 'assistant' && msg.reasoning_content && msg.content) {
-      reasoningStore.set(msg.content, msg.reasoning_content)
-    }
-  }
-}
-
-async function forward(body) {
-  const payload = {
+function buildPayload(body) {
+  return JSON.stringify({
     ...body,
     model:    resolveModel(body.model),
     messages: injectReasoning(body.messages ?? []),
-  }
-
-  const url = new URL('/v1/chat/completions', DEEPSEEK_BASE)
-  const isHttps = url.protocol === 'https:'
-  const lib = isHttps ? https : http
-
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify(payload)
-    const req = lib.request({
-      hostname: url.hostname,
-      port:     url.port || (isHttps ? 443 : 80),
-      path:     url.pathname,
-      method:   'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_KEY}`,
-        'Content-Length': Buffer.byteLength(data),
-      },
-    }, res => {
-      let raw = ''
-      res.on('data', chunk => raw += chunk)
-      res.on('end', () => resolve({ status: res.statusCode, body: raw }))
-    })
-    req.on('error', reject)
-    req.write(data)
-    req.end()
   })
 }
 
-const server = http.createServer(async (req, res) => {
+function makeRequest(data, opts) {
+  const url = new URL('/v1/chat/completions', DEEPSEEK_BASE)
+  const isHttps = url.protocol === 'https:'
+  const lib = isHttps ? https : http
+  return lib.request({
+    hostname: url.hostname,
+    port:     url.port || (isHttps ? 443 : 80),
+    path:     url.pathname,
+    method:   'POST',
+    headers: {
+      'Content-Type':   'application/json',
+      'Authorization':  `Bearer ${DEEPSEEK_KEY}`,
+      'Content-Length': Buffer.byteLength(data),
+      ...(opts.streaming ? { 'Accept': 'text/event-stream' } : {}),
+    },
+  })
+}
+
+const server = http.createServer((req, res) => {
   if (req.method !== 'POST' || !req.url.includes('/chat/completions')) {
     res.writeHead(404)
     res.end('Not found')
     return
   }
 
-  let raw = ''
-  req.on('data', chunk => raw += chunk)
-  req.on('end', async () => {
-    try {
-      const body = JSON.parse(raw)
-      const result = await forward(body)
+  let rawReq = ''
+  req.on('data', chunk => rawReq += chunk)
+  req.on('end', () => {
+    let body
+    try { body = JSON.parse(rawReq) } catch (e) {
+      res.writeHead(400)
+      res.end(JSON.stringify({ error: { message: 'Bad JSON', type: 'proxy_error' } }))
+      return
+    }
 
-      // Store reasoning_content from successful responses
-      if (result.status === 200) {
-        try {
-          const parsed = JSON.parse(result.body)
-          storeReasoning(parsed.choices)
-        } catch {}
+    const streaming = !!body.stream
+    const data = buildPayload(body)
+    const upstream = makeRequest(data, { streaming })
+
+    upstream.on('response', upRes => {
+      // Forward headers
+      res.writeHead(upRes.statusCode, {
+        'Content-Type': upRes.headers['content-type'] ?? 'application/json',
+      })
+
+      if (!streaming) {
+        // Non-streaming: buffer, store reasoning, forward
+        let raw = ''
+        upRes.on('data', chunk => raw += chunk)
+        upRes.on('end', () => {
+          if (upRes.statusCode === 200) {
+            try {
+              const parsed = JSON.parse(raw)
+              const msg = parsed.choices?.[0]?.message
+              if (msg?.role === 'assistant' && msg.reasoning_content && msg.content) {
+                reasoningStore.set(msg.content, msg.reasoning_content)
+              }
+            } catch {}
+          }
+          res.end(raw)
+        })
+        return
       }
 
-      res.writeHead(result.status, { 'Content-Type': 'application/json' })
-      res.end(result.body)
-    } catch (err) {
+      // Streaming: pass through chunks in real time, accumulate for storage
+      let accContent = ''
+      let accReasoning = ''
+
+      upRes.on('data', chunk => {
+        const text = chunk.toString()
+        res.write(chunk) // pass through immediately
+
+        // Parse SSE lines to accumulate content + reasoning
+        for (const line of text.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          const json = line.slice(5).trim()
+          if (json === '[DONE]') {
+            // Stream ended — store the complete pair
+            if (accContent && accReasoning) {
+              reasoningStore.set(accContent, accReasoning)
+            }
+            continue
+          }
+          try {
+            const evt = JSON.parse(json)
+            const delta = evt.choices?.[0]?.delta
+            if (delta?.content)           accContent   += delta.content
+            if (delta?.reasoning_content) accReasoning += delta.reasoning_content
+          } catch {}
+        }
+      })
+
+      upRes.on('end', () => {
+        // Final store in case [DONE] wasn't in last chunk
+        if (accContent && accReasoning) {
+          reasoningStore.set(accContent, accReasoning)
+        }
+        res.end()
+      })
+    })
+
+    upstream.on('error', err => {
       res.writeHead(502, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: { message: err.message, type: 'proxy_error' } }))
-    }
+    })
+
+    upstream.write(data)
+    upstream.end()
   })
 })
 
