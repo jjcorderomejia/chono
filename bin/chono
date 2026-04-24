@@ -69,7 +69,6 @@ function applyFlag(flag, model) {
   process.env.OPENAI_BASE_URL = `http://127.0.0.1:${PROXY_PORT}/v1`
   process.env.OPENAI_API_KEY  = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? ''
   process.env.OPENAI_MODEL    = model
-  process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '1000000'
   return true
 }
 
