@@ -105,10 +105,9 @@ const server = http.createServer((req, res) => {
             try {
               const parsed = JSON.parse(raw)
               const msg = parsed.choices?.[0]?.message
-              if (msg?.reasoning_content) {
-                reasoningList.push(msg.reasoning_content)
-                process.stderr.write(`[proxy] stored reasoning[${reasoningList.length - 1}] (non-stream) len=${msg.reasoning_content.length}\n`)
-              }
+              const rc = msg?.reasoning_content ?? ''
+              reasoningList.push(rc)
+              process.stderr.write(`[proxy] stored reasoning[${reasoningList.length - 1}] (non-stream) len=${rc.length}\n`)
             } catch {}
           }
           res.end(raw)
@@ -133,10 +132,8 @@ const server = http.createServer((req, res) => {
       })
 
       upRes.on('end', () => {
-        if (accReasoning) {
-          reasoningList.push(accReasoning)
-          process.stderr.write(`[proxy] stored reasoning[${reasoningList.length - 1}] len=${accReasoning.length}\n`)
-        }
+        reasoningList.push(accReasoning)
+        process.stderr.write(`[proxy] stored reasoning[${reasoningList.length - 1}] len=${accReasoning.length}\n`)
         res.end()
       })
     })
