@@ -29,12 +29,19 @@ function killOldProxy() {
   try { execSync(`fuser -k ${PROXY_PORT}/tcp 2>/dev/null`, { stdio: 'ignore' }) } catch {}
 }
 
+function sessionFile() {
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const ts  = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  return join(LOG_DIR, 'sessions', `${ts}.jsonl`)
+}
+
 function startProxy() {
   killOldProxy()
   try { mkdirSync(LOG_DIR, { recursive: true }) } catch {}
   const logFd = openSync(join(LOG_DIR, 'proxy.log'), 'a')
   const child = spawn(process.execPath, [PROXY_SCRIPT], {
-    env:    { ...process.env, CHONO_PROXY_PORT: PROXY_PORT },
+    env:    { ...process.env, CHONO_PROXY_PORT: PROXY_PORT, CHONO_SESSION_FILE: sessionFile() },
     stdio:  ['ignore', logFd, logFd],
     detached: false,
   })
