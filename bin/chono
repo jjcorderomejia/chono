@@ -4,31 +4,45 @@
  * Chono — multi-model agentic CLI
  *
  * Usage:
- *   chono                          # start in current directory
- *   chono --think /path/to/project # start DeepSeek reasoner in given directory
+ *   chono --think <path>  # DeepSeek R1 (deepseek-reasoner)
+ *   chono --pro <path>    # DeepSeek V4 Pro (deepseek-v4-pro)
+ *   chono --flash <path>  # DeepSeek V4 Flash (deepseek-v4-flash)
  */
 
 import { existsSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
-// Parse --think <path> before anything else so process.chdir() fires
-// before the bootstrap state reads process.cwd()
-const thinkIdx = process.argv.indexOf('--think')
-if (thinkIdx !== -1 && process.argv[thinkIdx + 1]) {
-  const thinkPath = resolve(process.argv[thinkIdx + 1])
-  if (!existsSync(thinkPath)) {
-    console.error(`chono: path not found: ${thinkPath}`)
+const FLAGS = {
+  '--think': 'deepseek-reasoner',
+  '--pro':   'deepseek-v4-pro',
+  '--flash': 'deepseek-v4-flash',
+}
+
+function applyFlag(flag, model) {
+  const idx = process.argv.indexOf(flag)
+  if (idx === -1) return false
+  const pathArg = process.argv[idx + 1]
+  if (!pathArg || pathArg.startsWith('--')) {
+    console.error(`chono: ${flag} requires a path argument`)
     process.exit(1)
   }
-  process.chdir(thinkPath)
-  // Remove --think <path> from argv so the rest of the CLI doesn't see them
-  process.argv.splice(thinkIdx, 2)
-  // Wire DeepSeek reasoner
+  const target = resolve(pathArg)
+  if (!existsSync(target)) {
+    console.error(`chono: path not found: ${target}`)
+    process.exit(1)
+  }
+  process.chdir(target)
+  process.argv.splice(idx, 2)
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
   process.env.OPENAI_API_KEY = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? ''
-  process.env.OPENAI_MODEL = 'deepseek-reasoner'
+  process.env.OPENAI_MODEL = model
+  return true
+}
+
+for (const [flag, model] of Object.entries(FLAGS)) {
+  if (applyFlag(flag, model)) break
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -42,9 +56,6 @@ if (existsSync(distPath)) {
 
   Build first:
     bun run build
-
-  Or run directly with Bun:
-    bun run dev
 `)
   process.exit(1)
 }
