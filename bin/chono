@@ -9,14 +9,33 @@
  *   chono --flash <path>  # DeepSeek V4 Flash (deepseek-v4-flash)
  */
 
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, openSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
+import { spawn } from 'child_process'
 
 const FLAGS = {
   '--think': 'deepseek-reasoner',
   '--pro':   'deepseek-v4-pro',
   '--flash': 'deepseek-v4-flash',
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const PROXY_SCRIPT = join(__dirname, 'chono-proxy.mjs')
+const PROXY_PORT   = process.env.CHONO_PROXY_PORT ?? '4799'
+const LOG_DIR      = join(process.env.HOME ?? '/tmp', '.chono')
+
+function startProxy() {
+  try { mkdirSync(LOG_DIR, { recursive: true }) } catch {}
+  const logFd = openSync(join(LOG_DIR, 'proxy.log'), 'a')
+  const child = spawn(process.execPath, [PROXY_SCRIPT], {
+    env:    { ...process.env, CHONO_PROXY_PORT: PROXY_PORT },
+    stdio:  ['ignore', logFd, logFd],
+    detached: false,
+  })
+  child.unref()
+  // Give proxy a moment to bind
+  return new Promise(r => setTimeout(r, 300))
 }
 
 function applyFlag(flag, model) {
@@ -35,17 +54,19 @@ function applyFlag(flag, model) {
   process.chdir(target)
   process.argv.splice(idx, 2)
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com/v1'
-  process.env.OPENAI_API_KEY = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? ''
-  process.env.OPENAI_MODEL = model
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${PROXY_PORT}/v1`
+  process.env.OPENAI_API_KEY  = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? ''
+  process.env.OPENAI_MODEL    = model
   return true
 }
 
+let useProxy = false
 for (const [flag, model] of Object.entries(FLAGS)) {
-  if (applyFlag(flag, model)) break
+  if (applyFlag(flag, model)) { useProxy = true; break }
 }
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
+if (useProxy) await startProxy()
+
 const distPath = join(__dirname, '..', 'dist', 'cli.mjs')
 
 if (existsSync(distPath)) {
