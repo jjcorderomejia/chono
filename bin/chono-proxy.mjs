@@ -32,10 +32,23 @@ function resolveModel(model) {
   return MODEL_MAP[model] ?? model
 }
 
+function extractText(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .filter(b => b.type === 'text')
+      .map(b => b.text ?? '')
+      .join('')
+  }
+  return ''
+}
+
 function injectReasoning(messages) {
   return messages.map(msg => {
     if (msg.role !== 'assistant' || !msg.content) return msg
-    const rc = reasoningStore.get(msg.content)
+    const key = extractText(msg.content)
+    const rc = reasoningStore.get(key)
+    process.stderr.write(`[proxy] assistant msg key="${key.slice(0,60)}..." store_size=${reasoningStore.size} hit=${!!rc}\n`)
     if (!rc) return msg
     return { ...msg, reasoning_content: rc }
   })

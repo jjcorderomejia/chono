@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, openSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 
 const FLAGS = {
   '--think': 'deepseek-reasoner',
@@ -25,7 +25,12 @@ const PROXY_SCRIPT = join(__dirname, 'chono-proxy.mjs')
 const PROXY_PORT   = process.env.CHONO_PROXY_PORT ?? '4799'
 const LOG_DIR      = join(process.env.HOME ?? '/tmp', '.chono')
 
+function killOldProxy() {
+  try { execSync(`fuser -k ${PROXY_PORT}/tcp 2>/dev/null`, { stdio: 'ignore' }) } catch {}
+}
+
 function startProxy() {
+  killOldProxy()
   try { mkdirSync(LOG_DIR, { recursive: true }) } catch {}
   const logFd = openSync(join(LOG_DIR, 'proxy.log'), 'a')
   const child = spawn(process.execPath, [PROXY_SCRIPT], {
