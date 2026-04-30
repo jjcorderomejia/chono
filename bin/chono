@@ -9,10 +9,10 @@
  *   chono --flash <path>  # DeepSeek V4 Flash (deepseek-v4-flash)
  */
 
-import { existsSync, mkdirSync, openSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
-import { spawn, execSync } from 'child_process'
+import { spawn, execSync, spawnSync } from 'child_process'
 
 const FLAGS = {
   '--think': 'deepseek-reasoner',
@@ -21,33 +21,67 @@ const FLAGS = {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PROXY_SCRIPT = join(__dirname, 'chono-proxy.mjs')
-const PROXY_PORT   = process.env.CHONO_PROXY_PORT ?? '4799'
-const LOG_DIR      = join(process.env.HOME ?? '/tmp', '.chono')
+const LITELLM_URL  = process.env.LITELLM_BASE_URL ?? 'http://127.0.0.1:4000'
+const LITELLM_PORT = '4000'
+const LITELLM_CFG  = join(process.env.HOME ?? '/tmp', '.chono', 'litellm.yaml')
 
-function killOldProxy() {
-  try { execSync(`fuser -k ${PROXY_PORT}/tcp 2>/dev/null`, { stdio: 'ignore' }) } catch {}
+function isLitellmUp() {
+  try { execSync(`curl -sf http://127.0.0.1:${LITELLM_PORT}/health`, { stdio: 'ignore' }); return true } catch { return false }
 }
 
-function sessionFile() {
-  const now = new Date()
-  const pad = n => String(n).padStart(2, '0')
-  const ts  = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  return join(LOG_DIR, 'sessions', `${ts}.jsonl`)
-}
-
-function startProxy() {
-  killOldProxy()
-  try { mkdirSync(LOG_DIR, { recursive: true }) } catch {}
-  const logFd = openSync(join(LOG_DIR, 'proxy.log'), 'a')
-  const child = spawn(process.execPath, [PROXY_SCRIPT], {
-    env:    { ...process.env, CHONO_PROXY_PORT: PROXY_PORT, CHONO_SESSION_FILE: sessionFile() },
-    stdio:  ['ignore', logFd, logFd],
-    detached: false,
+function startLitellm() {
+  if (isLitellmUp()) return Promise.resolve()
+  const litellmBin = execSync('which litellm', { encoding: 'utf8' }).trim()
+  const child = spawn(litellmBin, ['--config', LITELLM_CFG, '--port', LITELLM_PORT], {
+    env:      { ...process.env, LITELLM_LOCAL_MODEL_COST_MAP: 'true' },
+    stdio:    'ignore',
+    detached: true,
   })
   child.unref()
-  // Give proxy a moment to bind
-  return new Promise(r => setTimeout(r, 300))
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + 10000
+    const poll = () => {
+      if (isLitellmUp()) return resolve()
+      if (Date.now() > deadline) return reject(new Error('LiteLLM did not start within 10s'))
+      setTimeout(poll, 300)
+    }
+    setTimeout(poll, 500)
+  })
+}
+
+function ensureSshKeepalive() {
+  const SSHD_CONFIG = '/etc/ssh/sshd_config'
+  try {
+    let config = readFileSync(SSHD_CONFIG, 'utf8')
+    if (/^\s*ClientAliveInterval\s+[1-9]/m.test(config)) return
+
+    if (/ClientAliveInterval/i.test(config)) {
+      config = config.replace(/^#?\s*ClientAliveInterval\s+.*/m, 'ClientAliveInterval 60')
+    } else {
+      config += '\nClientAliveInterval 60\n'
+    }
+    if (/ClientAliveCountMax/i.test(config)) {
+      config = config.replace(/^#?\s*ClientAliveCountMax\s+.*/m, 'ClientAliveCountMax 3')
+    } else {
+      config += 'ClientAliveCountMax 3\n'
+    }
+
+    // Try direct write (root), then sudo
+    let wrote = false
+    try { writeFileSync(SSHD_CONFIG, config); wrote = true } catch {}
+    if (!wrote) {
+      const tmp = `/tmp/sshd_config.chono.${process.pid}`
+      writeFileSync(tmp, config)
+      const cp = spawnSync('sudo', ['cp', tmp, SSHD_CONFIG], { stdio: 'ignore' })
+      try { spawnSync('rm', [tmp], { stdio: 'ignore' }) } catch {}
+      if (cp.status !== 0) return
+    }
+
+    // Reload sshd (works on systemd and sysvinit distros)
+    for (const args of [['systemctl', 'reload', 'ssh'], ['systemctl', 'reload', 'sshd'], ['service', 'ssh', 'reload'], ['service', 'sshd', 'reload']]) {
+      if (spawnSync(args[0], args.slice(1), { stdio: 'ignore' }).status === 0) break
+    }
+  } catch {}
 }
 
 function applyFlag(flag, model) {
@@ -66,18 +100,20 @@ function applyFlag(flag, model) {
   process.chdir(target)
   process.argv.splice(idx, 2)
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${PROXY_PORT}/v1`
-  process.env.OPENAI_API_KEY  = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY ?? ''
+  process.env.OPENAI_BASE_URL = `${LITELLM_URL}/v1`
+  process.env.OPENAI_API_KEY  = process.env.LITELLM_MASTER_KEY ?? process.env.DEEPSEEK_API_KEY ?? ''
   process.env.OPENAI_MODEL    = model
   return true
 }
 
-let useProxy = false
+let needsLitellm = false
 for (const [flag, model] of Object.entries(FLAGS)) {
-  if (applyFlag(flag, model)) { useProxy = true; break }
+  if (applyFlag(flag, model)) { needsLitellm = true; break }
 }
 
-if (useProxy) await startProxy()
+if (needsLitellm) await startLitellm()
+
+ensureSshKeepalive()
 
 const distPath = join(__dirname, '..', 'dist', 'cli.mjs')
 
