@@ -211,8 +211,9 @@ function convertMessages(
       // Check for tool_use blocks
       if (Array.isArray(content)) {
         const toolUses = content.filter((b: { type?: string }) => b.type === 'tool_use')
+        const reasoningBlocks = content.filter((b: { type?: string }) => b.type === 'reasoning')
         const textContent = content.filter(
-          (b: { type?: string }) => b.type !== 'tool_use' && b.type !== 'thinking',
+          (b: { type?: string }) => b.type !== 'tool_use' && b.type !== 'thinking' && b.type !== 'reasoning',
         )
 
         const assistantMsg: OpenAIMessage = {
@@ -221,6 +222,16 @@ function convertMessages(
             const c = convertContentBlocks(textContent)
             return typeof c === 'string' ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p.text ?? '').join('') : ''
           })(),
+        }
+
+        // Pass reasoning_content back so DeepSeek can continue the conversation
+        if (reasoningBlocks.length > 0) {
+          const reasoningText = reasoningBlocks
+            .map((b: { reasoning?: string }) => b.reasoning ?? '')
+            .join('')
+          if (reasoningText) {
+            ;(assistantMsg as Record<string, unknown>).reasoning_content = reasoningText
+          }
         }
 
         if (toolUses.length > 0) {
@@ -368,6 +379,7 @@ interface OpenAIStreamChunk {
     delta: {
       role?: string
       content?: string | null
+      reasoning_content?: string | null
       tool_calls?: Array<{
         index: number
         id?: string
@@ -417,6 +429,7 @@ async function* openaiStreamToAnthropic(
   let contentBlockIndex = 0
   const activeToolCalls = new Map<number, { id: string; name: string; index: number; jsonBuffer: string }>()
   let hasEmittedContentStart = false
+  let hasEmittedReasoningStart = false
   let lastStopReason: 'tool_use' | 'max_tokens' | 'end_turn' | null = null
   let hasEmittedFinalUsage = false
   let hasProcessedFinishReason = false
@@ -473,9 +486,32 @@ async function* openaiStreamToAnthropic(
       for (const choice of chunk.choices ?? []) {
         const delta = choice.delta
 
+        // Reasoning content (DeepSeek thinking) — emitted before regular content
+        if (delta.reasoning_content != null) {
+          if (!hasEmittedReasoningStart) {
+            yield {
+              type: 'content_block_start',
+              index: contentBlockIndex,
+              content_block: { type: 'reasoning', reasoning: '' },
+            }
+            hasEmittedReasoningStart = true
+          }
+          yield {
+            type: 'content_block_delta',
+            index: contentBlockIndex,
+            delta: { type: 'reasoning_delta', reasoning: delta.reasoning_content },
+          }
+        }
+
         // Text content — use != null to distinguish absent field from empty string,
         // some providers send "" as first delta to signal streaming start
         if (delta.content != null) {
+          // Close reasoning block before opening text block
+          if (hasEmittedReasoningStart && !hasEmittedContentStart) {
+            yield { type: 'content_block_stop', index: contentBlockIndex }
+            contentBlockIndex++
+            hasEmittedReasoningStart = false
+          }
           if (!hasEmittedContentStart) {
             yield {
               type: 'content_block_start',
@@ -563,6 +599,11 @@ async function* openaiStreamToAnthropic(
           hasProcessedFinishReason = true
 
           // Close any open content blocks
+          if (hasEmittedReasoningStart) {
+            yield { type: 'content_block_stop', index: contentBlockIndex }
+            contentBlockIndex++
+            hasEmittedReasoningStart = false
+          }
           if (hasEmittedContentStart) {
             yield {
               type: 'content_block_stop',
@@ -680,6 +721,24 @@ class OpenAIShimStream {
   }
 }
 
+function isReasoningContentError(err: unknown): boolean {
+  return (
+    err instanceof APIError &&
+    err.status === 400 &&
+    String((err as APIError).message ?? '').toLowerCase().includes('reasoning_content')
+  )
+}
+
+function stripReasoningFromMessages(messages: ShimCreateParams['messages']): ShimCreateParams['messages'] {
+  return (messages as Array<{ role?: string; content?: unknown }>).map(msg => {
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return msg
+    return {
+      ...msg,
+      content: (msg.content as Array<{ type?: string }>).filter(b => b.type !== 'reasoning'),
+    }
+  }) as ShimCreateParams['messages']
+}
+
 class OpenAIShimMessages {
   private defaultHeaders: Record<string, string>
   private reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
@@ -699,7 +758,20 @@ class OpenAIShimMessages {
 
     const promise = (async () => {
       const request = resolveProviderRequest({ model: params.model, reasoningEffortOverride: self.reasoningEffort })
-      const response = await self._doRequest(request, params, options)
+      let response: Response
+      try {
+        response = await self._doRequest(request, params, options)
+      } catch (err) {
+        if (isReasoningContentError(err)) {
+          response = await self._doRequest(
+            request,
+            { ...params, messages: stripReasoningFromMessages(params.messages) },
+            options,
+          )
+        } else {
+          throw err
+        }
+      }
       httpResponse = response
 
       if (params.stream) {
@@ -960,6 +1032,7 @@ class OpenAIShimMessages {
             | string
             | null
             | Array<{ type?: string; text?: string }>
+          reasoning_content?: string | null
           tool_calls?: Array<{
             id: string
             function: { name: string; arguments: string }
@@ -980,6 +1053,12 @@ class OpenAIShimMessages {
   ) {
     const choice = data.choices?.[0]
     const content: Array<Record<string, unknown>> = []
+
+    // Capture reasoning_content before regular content so it appears first
+    const rawReasoning = choice?.message?.reasoning_content
+    if (rawReasoning) {
+      content.push({ type: 'reasoning', reasoning: rawReasoning })
+    }
 
     const rawContent = choice?.message?.content
     if (typeof rawContent === 'string' && rawContent) {

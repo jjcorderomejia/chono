@@ -4771,7 +4771,7 @@ type ThinkingBlockType =
 function isThinkingBlock(
   block: ContentBlockParam | ContentBlock | BetaContentBlock,
 ): block is ThinkingBlockType {
-  return block.type === 'thinking' || block.type === 'redacted_thinking'
+  return block.type === 'thinking' || block.type === 'redacted_thinking' || block.type === 'reasoning'
 }
 
 /**
