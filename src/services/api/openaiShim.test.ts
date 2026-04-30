@@ -313,6 +313,185 @@ test('preserves Gemini tool call extra_content from streaming chunks', async () 
   })
 })
 
+test('captures DeepSeek reasoning_content from stream as reasoning block events', async () => {
+  globalThis.fetch = (async (_input, _init) => {
+    const chunks = makeStreamChunks([
+      {
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        model: 'deepseek-v4-pro',
+        choices: [
+          {
+            index: 0,
+            delta: { role: 'assistant', reasoning_content: 'Let me think step by step.' },
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        model: 'deepseek-v4-pro',
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: ' The answer is 42.' },
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        model: 'deepseek-v4-pro',
+        choices: [
+          {
+            index: 0,
+            delta: { content: 'The answer is 42.' },
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        model: 'deepseek-v4-pro',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      },
+    ])
+    return makeSseResponse(chunks)
+  }) as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  const result = await client.beta.messages
+    .create({
+      model: 'deepseek-v4-pro',
+      system: 'test',
+      messages: [{ role: 'user', content: 'What is 6 times 7?' }],
+      max_tokens: 64,
+      stream: true,
+    })
+    .withResponse()
+
+  const events: Array<Record<string, unknown>> = []
+  for await (const event of result.data) {
+    events.push(event)
+  }
+
+  const reasoningStart = events.find(
+    e =>
+      e.type === 'content_block_start' &&
+      (e.content_block as Record<string, unknown>)?.type === 'reasoning',
+  ) as { content_block?: Record<string, unknown> } | undefined
+
+  expect(reasoningStart?.content_block).toMatchObject({ type: 'reasoning', reasoning: '' })
+
+  const reasoningDeltas = events.filter(
+    e =>
+      e.type === 'content_block_delta' &&
+      (e.delta as Record<string, unknown>)?.type === 'reasoning_delta',
+  ) as Array<{ delta?: Record<string, unknown> }>
+
+  expect(reasoningDeltas).toHaveLength(2)
+  expect(reasoningDeltas[0]?.delta?.reasoning).toBe('Let me think step by step.')
+  expect(reasoningDeltas[1]?.delta?.reasoning).toBe(' The answer is 42.')
+
+  // Reasoning block must be closed before text block starts
+  const reasoningStop = events.find(
+    e => e.type === 'content_block_stop' && e.index === 0,
+  )
+  const textStart = events.find(
+    e =>
+      e.type === 'content_block_start' &&
+      (e.content_block as Record<string, unknown>)?.type === 'text',
+  )
+  expect(reasoningStop).toBeDefined()
+  expect(textStart).toBeDefined()
+  expect(events.indexOf(reasoningStop!)).toBeLessThan(events.indexOf(textStart!))
+})
+
+test('passes reasoning blocks back as reasoning_content in follow-up requests', async () => {
+  let requestBody: Record<string, unknown> | undefined
+
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-2',
+        model: 'deepseek-v4-pro',
+        choices: [{ message: { role: 'assistant', content: 'Sure.' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 20, completion_tokens: 2, total_tokens: 22 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'deepseek-v4-pro',
+    system: 'test',
+    messages: [
+      { role: 'user', content: 'What is 6 times 7?' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', reasoning: 'Let me think step by step. 6 × 7 = 42.' },
+          { type: 'text', text: 'The answer is 42.' },
+        ],
+      },
+      { role: 'user', content: 'Are you sure?' },
+    ],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  const outboundMessages = requestBody?.messages as Array<Record<string, unknown>>
+  const assistantMsg = outboundMessages?.find(m => m.role === 'assistant')
+
+  expect(assistantMsg).toBeDefined()
+  expect(assistantMsg?.reasoning_content).toBe('Let me think step by step. 6 × 7 = 42.')
+  expect(assistantMsg?.content).toBe('The answer is 42.')
+})
+
+test('captures reasoning_content from non-streaming response as reasoning block', async () => {
+  globalThis.fetch = (async (_input, _init) => {
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-3',
+        model: 'deepseek-v4-pro',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              reasoning_content: 'Step 1: 6 × 7 = 42.',
+              content: 'The answer is 42.',
+            },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+  }) as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  const result = (await client.beta.messages.create({
+    model: 'deepseek-v4-pro',
+    system: 'test',
+    messages: [{ role: 'user', content: 'What is 6 times 7?' }],
+    max_tokens: 64,
+    stream: false,
+  })) as { content: Array<Record<string, unknown>> }
+
+  expect(result.content).toHaveLength(2)
+  expect(result.content[0]).toEqual({ type: 'reasoning', reasoning: 'Step 1: 6 × 7 = 42.' })
+  expect(result.content[1]).toEqual({ type: 'text', text: 'The answer is 42.' })
+})
+
 test('sanitizes malformed MCP tool schemas before sending them to OpenAI', async () => {
   let requestBody: Record<string, unknown> | undefined
 

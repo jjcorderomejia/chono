@@ -52,7 +52,7 @@ export function hasContentAfterIndex(messages: RenderableMessage[], index: numbe
     const msg = messages[i];
     if (msg?.type === 'assistant') {
       const content = msg.message.content[0];
-      if (content?.type === 'thinking' || content?.type === 'redacted_thinking') {
+      if (content?.type === 'thinking' || content?.type === 'redacted_thinking' || content?.type === 'reasoning') {
         continue;
       }
       if (content?.type === 'tool_use') {

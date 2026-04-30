@@ -2036,6 +2036,12 @@ async function* queryModel(
                   signature: '',
                 }
                 break
+              case 'reasoning':
+                contentBlocks[part.index] = {
+                  ...part.content_block,
+                  reasoning: '',
+                }
+                break
               default:
                 // even more awkwardly, the sdk mutates the contents of text blocks
                 // as it works. we want the blocks to be immutable, so that we can
@@ -2158,6 +2164,20 @@ async function* queryModel(
                     throw new Error('Content block is not a thinking block')
                   }
                   contentBlock.thinking += delta.thinking
+                  break
+                case 'reasoning_delta':
+                  if (contentBlock.type !== 'reasoning') {
+                    logEvent('tengu_streaming_error', {
+                      error_type:
+                        'content_block_type_mismatch_reasoning_delta' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                      expected_type:
+                        'reasoning' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                      actual_type:
+                        contentBlock.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                    throw new Error('Content block is not a reasoning block')
+                  }
+                  contentBlock.reasoning += delta.reasoning
                   break
               }
             }

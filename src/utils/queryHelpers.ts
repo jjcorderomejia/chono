@@ -64,7 +64,8 @@ export function isResultSuccessful(
     return (
       lastContent?.type === 'text' ||
       lastContent?.type === 'thinking' ||
-      lastContent?.type === 'redacted_thinking'
+      lastContent?.type === 'redacted_thinking' ||
+      lastContent?.type === 'reasoning'
     )
   }
 

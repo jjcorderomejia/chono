@@ -27,9 +27,11 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'o4-mini':                  200_000,
   'o3':                       200_000,
 
-  // DeepSeek (V3: 128k context per official docs)
+  // DeepSeek
   'deepseek-chat':            128_000,
   'deepseek-reasoner':        128_000,
+  'deepseek-v4-pro':        1_000_000,
+  'deepseek-v4-flash':      1_000_000,
 
   // Groq (fast inference)
   'llama-3.3-70b-versatile':  128_000,
@@ -89,6 +91,8 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   // DeepSeek
   'deepseek-chat':              8_192,
   'deepseek-reasoner':         32_768,
+  'deepseek-v4-pro':          384_000,
+  'deepseek-v4-flash':        384_000,
 
   // Groq
   'llama-3.3-70b-versatile':  32_768,

@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
+import type { ReasoningContentBlock } from '../../types/reasoning.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
@@ -187,6 +188,8 @@ export function estimateMessageTokens(messages: Message[]): number {
         totalTokens += roughTokenCountEstimation(block.thinking)
       } else if (block.type === 'redacted_thinking') {
         totalTokens += roughTokenCountEstimation(block.data)
+      } else if (block.type === 'reasoning') {
+        totalTokens += roughTokenCountEstimation((block as unknown as ReasoningContentBlock).reasoning)
       } else if (block.type === 'tool_use') {
         // Match roughTokenCountEstimationForBlock: count name + input,
         // not the JSON wrapper or id field.

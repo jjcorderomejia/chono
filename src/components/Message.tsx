@@ -15,6 +15,7 @@ import { logError } from '../utils/log.js';
 import type { buildMessageLookups } from '../utils/messages.js';
 import { CompactSummary } from './CompactSummary.js';
 import { AdvisorMessage } from './messages/AdvisorMessage.js';
+import { AssistantReasoningMessage } from './messages/AssistantReasoningMessage.js';
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage.js';
 import { AssistantTextMessage } from './messages/AssistantTextMessage.js';
 import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js';
@@ -580,6 +581,13 @@ function AssistantMessageBlock(t0) {
         }
         logError(new Error(`Unable to render server tool block: ${param.type}`));
         return null;
+      }
+    case "reasoning":
+      {
+        if (!isTranscriptMode && !verbose) {
+          return null;
+        }
+        return <AssistantReasoningMessage addMargin={addMargin} param={param as { type: 'reasoning'; reasoning: string }} isTranscriptMode={isTranscriptMode} verbose={verbose} />;
       }
     default:
       {

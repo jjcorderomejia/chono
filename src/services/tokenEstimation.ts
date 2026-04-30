@@ -1,4 +1,5 @@
 import type { Anthropic } from '@anthropic-ai/sdk'
+import type { ReasoningContentBlock } from '../types/reasoning.js'
 import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 // @aws-sdk/client-bedrock-runtime is imported dynamically in countTokensWithBedrock()
 // to defer ~279KB of AWS SDK code until a Bedrock call is actually made
@@ -426,6 +427,9 @@ function roughTokenCountEstimationForBlock(
   }
   if (block.type === 'redacted_thinking') {
     return roughTokenCountEstimation(block.data)
+  }
+  if (block.type === 'reasoning') {
+    return roughTokenCountEstimation((block as unknown as ReasoningContentBlock).reasoning)
   }
   // server_tool_use, web_search_tool_result, mcp_tool_use, etc. —
   // text-like payloads (tool inputs, search results, no base64).
