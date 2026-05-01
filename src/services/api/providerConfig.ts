@@ -57,7 +57,7 @@ const CODEX_ALIAS_MODELS: Record<
 } as const
 
 type CodexAlias = keyof typeof CODEX_ALIAS_MODELS
-type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
+type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export type ProviderTransport = 'chat_completions' | 'codex_responses'
 
@@ -156,7 +156,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
   if (!value) return undefined
   const normalized = value.trim().toLowerCase()
-  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh' || normalized === 'max') {
     return normalized
   }
   return undefined

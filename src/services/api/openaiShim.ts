@@ -892,6 +892,8 @@ class OpenAIShimMessages {
       delete body.max_completion_tokens
     }
 
+    if (request.reasoning?.effort) body.reasoning_effort = request.reasoning.effort
+
     if (params.temperature !== undefined) body.temperature = params.temperature
     if (params.top_p !== undefined) body.top_p = params.top_p
 
