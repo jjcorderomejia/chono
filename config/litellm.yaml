@@ -1,0 +1,48 @@
+model_list:
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: deepseek/deepseek-v4-pro
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      timeout: 300
+      stream_timeout: 300
+      max_retries: 2
+    model_info:
+      supports_reasoning: true
+
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: deepseek/deepseek-v4-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      timeout: 60
+      stream_timeout: 60
+      max_retries: 2
+    model_info:
+      supports_reasoning: true
+
+  - model_name: deepseek-reasoner
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      timeout: 300
+      stream_timeout: 300
+      max_retries: 1
+
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com
+      timeout: 60
+      stream_timeout: 60
+      max_retries: 2
+
+litellm_settings:
+  set_verbose: true
+  local_model_cost_map: true
+
+general_settings:
+  host: 127.0.0.1
+  port: 4000
