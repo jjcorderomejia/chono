@@ -139,7 +139,26 @@ globalThis.fetch = async function(url, init) {
     isStream = body.stream === true
   } catch {}
 
-  const resp = await _origFetch(url, init)
+  let resp
+  try {
+    resp = await _origFetch(url, init)
+  } catch (err) {
+    try { appendFileSync(SESSION_FILE, JSON.stringify({
+      turn, model, ts: new Date().toISOString(), error: String(err),
+      total_ms: Date.now() - reqStart,
+    }) + '\n') } catch {}
+    throw err
+  }
+
+  if (!resp.ok) {
+    resp.clone().text().then(body => {
+      try { appendFileSync(SESSION_FILE, JSON.stringify({
+        turn, model, ts: new Date().toISOString(),
+        status: resp.status, error: body,
+        total_ms: Date.now() - reqStart,
+      }) + '\n') } catch {}
+    }).catch(() => {})
+  }
 
   if (!isStream) {
     resp.clone().json().then(data => {
