@@ -10,7 +10,7 @@
  *   chono --max <path>    # DeepSeek V4 Pro — Think Max (reasoning_effort=max)
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, openSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { spawn, execSync, spawnSync } from 'child_process'
@@ -26,6 +26,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const LITELLM_URL  = process.env.LITELLM_BASE_URL ?? 'http://127.0.0.1:4000'
 const LITELLM_PORT = '4000'
 const LITELLM_CFG  = join(process.env.HOME ?? '/tmp', '.chono', 'litellm.yaml')
+const LITELLM_LOG  = join(process.env.HOME ?? '/tmp', '.chono', 'litellm.log')
+
+const SESSION_DIR  = join(process.env.HOME ?? '/tmp', '.chono', 'sessions')
+mkdirSync(SESSION_DIR, { recursive: true })
+const _sessionTs   = new Date().toISOString().replace(/T/, '-').replace(/:/g, '').slice(0, 15)
+const SESSION_FILE = join(SESSION_DIR, `${_sessionTs}.jsonl`)
+let _turnCount = 0
 
 function isLitellmUp() {
   try { execSync(`curl -sf http://127.0.0.1:${LITELLM_PORT}/health`, { stdio: 'ignore' }); return true } catch { return false }
@@ -34,9 +41,10 @@ function isLitellmUp() {
 function startLitellm() {
   if (isLitellmUp()) return Promise.resolve()
   const litellmBin = execSync('which litellm', { encoding: 'utf8' }).trim()
-  const child = spawn(litellmBin, ['--config', LITELLM_CFG, '--port', LITELLM_PORT], {
+  const logFd = openSync(LITELLM_LOG, 'a')
+  const child = spawn(litellmBin, ['--config', LITELLM_CFG, '--port', LITELLM_PORT, '--detailed_debug'], {
     env:      { ...process.env, LITELLM_LOCAL_MODEL_COST_MAP: 'true' },
-    stdio:    'ignore',
+    stdio:    ['ignore', logFd, logFd],
     detached: true,
   })
   child.unref()
@@ -116,6 +124,81 @@ for (const [flag, model] of Object.entries(FLAGS)) {
 if (needsLitellm) await startLitellm()
 
 ensureSshKeepalive()
+
+const _origFetch = globalThis.fetch.bind(globalThis)
+globalThis.fetch = async function(url, init) {
+  const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : String(url)
+  if (!urlStr.includes('/v1/chat/completions')) return _origFetch(url, init)
+
+  const reqStart = Date.now()
+  const turn = _turnCount++
+  let model = 'unknown', isStream = false
+  try {
+    const body = JSON.parse(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body))
+    model = body.model ?? 'unknown'
+    isStream = body.stream === true
+  } catch {}
+
+  const resp = await _origFetch(url, init)
+
+  if (!isStream) {
+    resp.clone().json().then(data => {
+      const usage = data.usage ?? {}
+      const rc = data.choices?.[0]?.message?.reasoning_content ?? ''
+      try { appendFileSync(SESSION_FILE, JSON.stringify({
+        turn, model, ts: new Date().toISOString(),
+        ttft_ms: Date.now() - reqStart, total_ms: Date.now() - reqStart,
+        prompt_tokens: usage.prompt_tokens ?? null,
+        completion_tokens: usage.completion_tokens ?? null,
+        reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens ?? null,
+        reasoning_len: rc.length, reasoning_preview: rc.slice(0, 200),
+      }) + '\n') } catch {}
+    }).catch(() => {})
+    return resp
+  }
+
+  if (!resp.body) return resp
+  const [s1, s2] = resp.body.tee()
+  ;(async () => {
+    let ttft = null, accReasoning = '', usage = null
+    const reader = s2.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6).trim()
+          if (raw === '[DONE]') continue
+          try {
+            const chunk = JSON.parse(raw)
+            const delta = chunk.choices?.[0]?.delta
+            if (delta?.reasoning_content) {
+              if (ttft === null) ttft = Date.now() - reqStart
+              accReasoning += delta.reasoning_content
+            } else if (delta?.content && ttft === null) {
+              ttft = Date.now() - reqStart
+            }
+            if (chunk.usage) usage = chunk.usage
+          } catch {}
+        }
+      }
+    } catch {}
+    try { appendFileSync(SESSION_FILE, JSON.stringify({
+      turn, model, ts: new Date().toISOString(),
+      ttft_ms: ttft, total_ms: Date.now() - reqStart,
+      prompt_tokens: usage?.prompt_tokens ?? null,
+      completion_tokens: usage?.completion_tokens ?? null,
+      reasoning_tokens: usage?.completion_tokens_details?.reasoning_tokens ?? null,
+      reasoning_len: accReasoning.length, reasoning_preview: accReasoning.slice(0, 200),
+    }) + '\n') } catch {}
+  })()
+  return new Response(s1, { status: resp.status, statusText: resp.statusText, headers: resp.headers })
+}
 
 const distPath = join(__dirname, '..', 'dist', 'cli.mjs')
 
