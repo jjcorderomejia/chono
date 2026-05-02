@@ -5007,7 +5007,7 @@ export function filterOrphanedThinkingOnlyMessages(
     if (!Array.isArray(content)) continue
 
     const hasNonThinking = content.some(
-      block => block.type !== 'thinking' && block.type !== 'redacted_thinking',
+      block => block.type !== 'thinking' && block.type !== 'redacted_thinking' && block.type !== 'reasoning',
     )
     if (hasNonThinking && msg.message.id) {
       messageIdsWithNonThinkingContent.add(msg.message.id)
@@ -5027,7 +5027,7 @@ export function filterOrphanedThinkingOnlyMessages(
 
     // Check if ALL content blocks are thinking blocks
     const allThinking = content.every(
-      block => block.type === 'thinking' || block.type === 'redacted_thinking',
+      block => block.type === 'thinking' || block.type === 'redacted_thinking' || block.type === 'reasoning',
     )
 
     if (!allThinking) {
