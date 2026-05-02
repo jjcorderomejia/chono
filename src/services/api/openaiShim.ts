@@ -371,9 +371,10 @@ function convertTools(
 // ---------------------------------------------------------------------------
 
 interface OpenAIStreamChunk {
-  id: string
-  object: string
-  model: string
+  id?: string
+  object?: string
+  model?: string
+  error?: { message?: string; type?: string; code?: string | number }
   choices: Array<{
     index: number
     delta: {
@@ -479,6 +480,12 @@ async function* openaiStreamToAnthropic(
         chunk = JSON.parse(trimmed.slice(6))
       } catch {
         continue
+      }
+
+      // LiteLLM sometimes wraps provider errors as {"error":{...}} inside a 200 stream
+      if (chunk.error) {
+        const msg = chunk.error.message ?? JSON.stringify(chunk.error)
+        throw APIError.generate(400, { error: chunk.error }, msg, {})
       }
 
       const chunkUsage = convertChunkUsage(chunk.usage)
@@ -775,11 +782,29 @@ class OpenAIShimMessages {
       httpResponse = response
 
       if (params.stream) {
-        return new OpenAIShimStream(
+        const makeStream = (r: Response) =>
           request.transport === 'codex_responses'
-            ? codexStreamToAnthropic(response, request.resolvedModel)
-            : openaiStreamToAnthropic(response, request.resolvedModel),
-        )
+            ? codexStreamToAnthropic(r, request.resolvedModel)
+            : openaiStreamToAnthropic(r, request.resolvedModel)
+
+        async function* withReasoningRecovery(gen: AsyncGenerator<AnthropicStreamEvent>) {
+          try {
+            yield* gen
+          } catch (err) {
+            if (isReasoningContentError(err)) {
+              const retryResp = await self._doRequest(
+                request,
+                { ...params, messages: stripReasoningFromMessages(params.messages) },
+                options,
+              )
+              yield* makeStream(retryResp)
+            } else {
+              throw err
+            }
+          }
+        }
+
+        return new OpenAIShimStream(withReasoningRecovery(makeStream(response)))
       }
 
       if (request.transport === 'codex_responses') {
